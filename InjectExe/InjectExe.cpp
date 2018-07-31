@@ -9,21 +9,29 @@ using namespace std;
 
 namespace
 {
+	bool isInRemoteProcess = false;
+
 	struct InjectionContext
 	{
 		LPVOID imageBase; // remoteImageBase
 		uintptr_t offset; // remoteImageBase - imageBase
-		RemoteCallbackType callback;
 	};
 	DWORD WINAPI RemoteStartup(InjectionContext* ctx);
 	bool RelocateModuleBase(InjectionContext* ctx);
 	bool ResolveImportTable(InjectionContext* ctx);
+	bool ExecuteTLSCallback(InjectionContext* ctx);
+	bool CallModuleEntry(InjectionContext* ctx);
 }
 
 
-// Inject the whole exe into another process. Call callback in the target process.
+bool IsInRemoteProcess()
+{
+	return isInRemoteProcess;
+}
+
+// Inject the whole exe into another process. Call main() in the target process.
 // Return the address of exe in the target process, or NULL if fail
-LPVOID InjectExe(HANDLE process, RemoteCallbackType callback)
+LPVOID InjectExe(HANDLE process)
 {
 	PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)GetModuleHandle(NULL);
 	PIMAGE_NT_HEADERS ntHeader = PIMAGE_NT_HEADERS((uintptr_t)dosHeader + dosHeader->e_lfanew);
@@ -51,7 +59,6 @@ LPVOID InjectExe(HANDLE process, RemoteCallbackType callback)
 		InjectionContext ctx;
 		ctx.imageBase = remoteImageBase;
 		ctx.offset = offset;
-		ctx.callback = RemoteCallbackType((uintptr_t)callback + offset);
 
 		// Write InjectionContext
 		remoteCtx = VirtualAllocEx(process, NULL, imageSize, MEM_COMMIT, PAGE_READWRITE);
@@ -96,9 +103,14 @@ namespace
 	{
 		if (!RelocateModuleBase(ctx))
 			return 1;
+		isInRemoteProcess = true;
 		if (!ResolveImportTable(ctx))
 			return 2;
-		ctx->callback();
+		if (!ExecuteTLSCallback(ctx))
+			return 3;
+		// TODO Restore the global variables or we can't use static CRT
+		if (!CallModuleEntry(ctx))
+			return 4;
 		return 0;
 	}
 
@@ -110,19 +122,19 @@ namespace
 		if (ctx->offset == 0)
 			return true;
 
-		PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)ctx->imageBase;
-		PIMAGE_NT_HEADERS ntHeader = PIMAGE_NT_HEADERS((uintptr_t)dosHeader + dosHeader->e_lfanew);
+		auto dosHeader = (PIMAGE_DOS_HEADER)ctx->imageBase;
+		auto ntHeader = PIMAGE_NT_HEADERS((uintptr_t)dosHeader + dosHeader->e_lfanew);
 		if (ntHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress == 0
 			|| ntHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size == 0)
 			return true;
 
-		PIMAGE_BASE_RELOCATION relocation = PIMAGE_BASE_RELOCATION((uintptr_t)ctx->imageBase +
+		auto relocation = PIMAGE_BASE_RELOCATION((uintptr_t)ctx->imageBase +
 			ntHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress);
 		if (relocation == NULL) // Invalid
 			return false;
 		while (relocation->VirtualAddress + relocation->SizeOfBlock != 0)
 		{
-			PWORD relocationData = PWORD((uintptr_t)relocation + sizeof(IMAGE_BASE_RELOCATION));
+			auto relocationData = PWORD((uintptr_t)relocation + sizeof(IMAGE_BASE_RELOCATION));
 			int nRelocationData = (relocation->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) / sizeof(WORD);
 			for (int i = 0; i < nRelocationData; i++)
 			{
@@ -146,18 +158,18 @@ namespace
 
 	bool ResolveImportTable(InjectionContext* ctx)
 	{
-		PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)ctx->imageBase;
-		PIMAGE_NT_HEADERS ntHeader = PIMAGE_NT_HEADERS((uintptr_t)dosHeader + dosHeader->e_lfanew);
+		auto dosHeader = (PIMAGE_DOS_HEADER)ctx->imageBase;
+		auto ntHeader = PIMAGE_NT_HEADERS((uintptr_t)dosHeader + dosHeader->e_lfanew);
 		if (ntHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress == 0
 			|| ntHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size == 0)
 			return true;
 
-		PIMAGE_IMPORT_DESCRIPTOR importTable = PIMAGE_IMPORT_DESCRIPTOR((uintptr_t)ctx->imageBase +
+		auto importTable = PIMAGE_IMPORT_DESCRIPTOR((uintptr_t)ctx->imageBase +
 			ntHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress);
 		for (; importTable->Name != NULL; importTable++)
 		{
 			// Load the dependent module
-			PCHAR dllName = PCHAR((uintptr_t)ctx->imageBase + importTable->Name);
+			auto dllName = PCHAR((uintptr_t)ctx->imageBase + importTable->Name);
 			// Assuming kernel32.dll is at the same address, we can call LoadLibraryA before fixing IAT
 			HMODULE module = LoadLibraryA(dllName);
 			if (module == NULL)
@@ -168,7 +180,7 @@ namespace
 				originalThunk = PIMAGE_THUNK_DATA((uintptr_t)ctx->imageBase + importTable->OriginalFirstThunk);
 			else
 				originalThunk = PIMAGE_THUNK_DATA((uintptr_t)ctx->imageBase + importTable->FirstThunk);
-			PIMAGE_THUNK_DATA iatThunk = PIMAGE_THUNK_DATA((uintptr_t)ctx->imageBase + importTable->FirstThunk);
+			auto iatThunk = PIMAGE_THUNK_DATA((uintptr_t)ctx->imageBase + importTable->FirstThunk);
 			for (; originalThunk->u1.AddressOfData != NULL; originalThunk++, iatThunk++)
 			{
 				FARPROC function;
@@ -183,6 +195,32 @@ namespace
 				iatThunk->u1.Function = (uintptr_t)function;
 			}
 		}
+		return true;
+	}
+
+	bool ExecuteTLSCallback(InjectionContext* ctx)
+	{
+		auto dosHeader = (PIMAGE_DOS_HEADER)ctx->imageBase;
+		auto ntHeader = PIMAGE_NT_HEADERS((uintptr_t)dosHeader + dosHeader->e_lfanew);
+		if (ntHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress == 0)
+			return true;
+
+		auto tls = PIMAGE_TLS_DIRECTORY((uintptr_t)ctx->imageBase +
+			ntHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress);
+		for (auto callback = (PIMAGE_TLS_CALLBACK*)tls->AddressOfCallBacks; callback != NULL; callback++)
+			(*callback)(ctx->imageBase, DLL_PROCESS_ATTACH, NULL);
+		return true;
+	}
+
+	bool CallModuleEntry(InjectionContext* ctx)
+	{
+		auto dosHeader = (PIMAGE_DOS_HEADER)ctx->imageBase;
+		auto ntHeader = PIMAGE_NT_HEADERS((uintptr_t)dosHeader + dosHeader->e_lfanew);
+
+		auto crtStartup = (int(*)())((uintptr_t)ctx->imageBase + ntHeader->OptionalHeader.AddressOfEntryPoint);
+		if (crtStartup == NULL)
+			return false;
+		crtStartup(); // This function should never return
 		return true;
 	}
 }

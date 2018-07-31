@@ -10,11 +10,18 @@
 
 using namespace std;
 
-void __stdcall RemoteMain();
+int RemoteMain();
 
 
 int main()
 {
+	if (IsInRemoteProcess())
+	{
+		int result = RemoteMain();
+		// main() should never return, or the process will exit
+		TerminateThread(GetCurrentThread(), result);
+	}
+
 	// Inject into notepad
 	HWND hwnd = FindWindow(_T("Notepad"), NULL);
 	DWORD pid;
@@ -25,25 +32,26 @@ int main()
 		cerr << "Failed to open process: " << GetLastError() << endl;
 		return 1;
 	}
-	if (InjectExe(process, RemoteMain) == NULL)
+	LPVOID remoteImageBase = InjectExe(process);
+	if (remoteImageBase == NULL)
 		return 1;
+	cout << "remoteImageBase = 0x" << remoteImageBase << endl;
 	return 0;
 }
 
 // Called in the target process after this exe is loaded
-void __stdcall RemoteMain()
+int RemoteMain()
 {
-	WCHAR processPath[MAX_PATH];
+	/*WCHAR processPath[MAX_PATH];
 	GetModuleFileNameW(GetModuleHandle(NULL), processPath, MAX_PATH);
 	wstringstream stream;
 	stream << L"Hello world!\nI'm called from " << processPath;
-	MessageBoxW(NULL, stream.str().c_str(), L"InjectExe", MB_OK);
+	MessageBoxW(NULL, stream.str().c_str(), L"InjectExe", MB_OK);*/
 
-	/*wstring processPath(MAX_PATH, L'\0');
-	GetModuleFileNameW(GetModuleHandle(NULL), &processPath.front(), (DWORD)processPath.size());
-	MessageBoxW(NULL, processPath.c_str(), L"InjectExe", MB_OK);*/
+	//WCHAR* processPath = new WCHAR[MAX_PATH];
+	WCHAR* processPath = (WCHAR*)malloc(sizeof(WCHAR) * MAX_PATH);
+	GetModuleFileNameW(GetModuleHandle(NULL), processPath, MAX_PATH);
+	MessageBox(NULL, processPath, _T("InjectExe"), MB_OK);
 
-	/*array<TCHAR, MAX_PATH> processPath;
-	GetModuleFileName(GetModuleHandle(NULL), &processPath.front(), (DWORD)processPath.size());
-	MessageBox(NULL, &processPath.front(), _T("InjectExe"), MB_OK);*/
+	return 0;
 }
