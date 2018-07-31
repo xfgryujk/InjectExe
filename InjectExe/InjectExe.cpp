@@ -2,6 +2,7 @@
 //
 
 #include "stdafx.h"
+#include <array>
 
 #include "InjectExe.h"
 
@@ -15,11 +16,13 @@ namespace
 	{
 		LPVOID imageBase; // remoteImageBase
 		uintptr_t offset; // remoteImageBase - imageBase
+		array<TCHAR, MAX_PATH> filePath;
 	};
 	DWORD WINAPI RemoteStartup(InjectionContext* ctx);
 	bool RelocateModuleBase(InjectionContext* ctx);
 	bool ResolveImportTable(InjectionContext* ctx);
-	bool ExecuteTLSCallback(InjectionContext* ctx);
+	//bool RestoreGlobalVariables(InjectionContext* ctx);
+	bool ExecuteTlsCallback(InjectionContext* ctx);
 	bool CallModuleEntry(InjectionContext* ctx);
 }
 
@@ -33,9 +36,10 @@ bool IsInRemoteProcess()
 // Return the address of exe in the target process, or NULL if fail
 LPVOID InjectExe(HANDLE process)
 {
-	PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)GetModuleHandle(NULL);
+	HMODULE module = GetModuleHandle(NULL);
+	PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)module;
 	PIMAGE_NT_HEADERS ntHeader = PIMAGE_NT_HEADERS((uintptr_t)dosHeader + dosHeader->e_lfanew);
-	LPVOID imageBase = (LPVOID)dosHeader;
+	LPVOID imageBase = (LPVOID)module;
 	SIZE_T imageSize = ntHeader->OptionalHeader.SizeOfImage;
 
 	LPVOID remoteImageBase = NULL;
@@ -59,6 +63,7 @@ LPVOID InjectExe(HANDLE process)
 		InjectionContext ctx;
 		ctx.imageBase = remoteImageBase;
 		ctx.offset = offset;
+		GetModuleFileName(module, &ctx.filePath.front(), (DWORD)ctx.filePath.size());
 
 		// Write InjectionContext
 		remoteCtx = VirtualAllocEx(process, NULL, imageSize, MEM_COMMIT, PAGE_READWRITE);
@@ -103,14 +108,15 @@ namespace
 	{
 		if (!RelocateModuleBase(ctx))
 			return 1;
-		isInRemoteProcess = true;
 		if (!ResolveImportTable(ctx))
 			return 2;
-		if (!ExecuteTLSCallback(ctx))
-			return 3;
-		// TODO Restore the global variables or we can't use static CRT
-		if (!CallModuleEntry(ctx))
+		/*if (!RestoreGlobalVariables(ctx))
+			return 3;*/
+		isInRemoteProcess = true;
+		if (!ExecuteTlsCallback(ctx))
 			return 4;
+		if (!CallModuleEntry(ctx))
+			return 5;
 		return 0;
 	}
 
@@ -170,7 +176,7 @@ namespace
 		{
 			// Load the dependent module
 			auto dllName = PCHAR((uintptr_t)ctx->imageBase + importTable->Name);
-			// Assuming kernel32.dll is at the same address, we can call LoadLibraryA before fixing IAT
+			// Assuming kernel32.dll is at the same address, we can call some APIs before fixing IAT
 			HMODULE module = LoadLibraryA(dllName);
 			if (module == NULL)
 				return false;
@@ -198,7 +204,52 @@ namespace
 		return true;
 	}
 
-	bool ExecuteTLSCallback(InjectionContext* ctx)
+	//bool RestoreGlobalVariables(InjectionContext* ctx)
+	//{
+	//	auto dosHeader = (PIMAGE_DOS_HEADER)ctx->imageBase;
+	//	auto ntHeader = PIMAGE_NT_HEADERS((uintptr_t)dosHeader + dosHeader->e_lfanew);
+
+	//	// Map the exe file into memory
+	//	HANDLE file = CreateFile(&ctx->filePath.front(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	//	if (file == INVALID_HANDLE_VALUE)
+	//		return false;
+	//	HANDLE mapping = CreateFileMapping(file, NULL, PAGE_READONLY, 0, 0, NULL);
+	//	if (mapping == NULL)
+	//	{
+	//		CloseHandle(file);
+	//		return false;
+	//	}
+	//	LPVOID fileBuffer = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
+	//	if (fileBuffer == NULL)
+	//	{
+	//		CloseHandle(mapping);
+	//		CloseHandle(file);
+	//		return false;
+	//	}
+
+	//	auto sectionHeader = PIMAGE_SECTION_HEADER((uintptr_t)ntHeader + sizeof(IMAGE_NT_HEADERS));
+	//	int nSections = ntHeader->FileHeader.NumberOfSections;
+	//	for (int i = 0; i < nSections; ++i)
+	//	{
+	//		if (sectionHeader[i].VirtualAddress == 0)
+	//			continue;
+	//		constexpr DWORD DATA_CHARACTERISTICS = IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE | IMAGE_SCN_CNT_INITIALIZED_DATA;
+	//		// This section stores initialized global variables
+	//		if ((sectionHeader[i].Characteristics & DATA_CHARACTERISTICS) == DATA_CHARACTERISTICS)
+	//		{
+	//			memcpy((BYTE*)ctx->imageBase + sectionHeader[i].VirtualAddress,
+	//				(BYTE*)fileBuffer + sectionHeader[i].PointerToRawData,
+	//				sectionHeader[i].SizeOfRawData);
+	//		}
+	//	}
+
+	//	UnmapViewOfFile(fileBuffer);
+	//	CloseHandle(mapping);
+	//	CloseHandle(file);
+	//	return true;
+	//}
+
+	bool ExecuteTlsCallback(InjectionContext* ctx)
 	{
 		auto dosHeader = (PIMAGE_DOS_HEADER)ctx->imageBase;
 		auto ntHeader = PIMAGE_NT_HEADERS((uintptr_t)dosHeader + dosHeader->e_lfanew);

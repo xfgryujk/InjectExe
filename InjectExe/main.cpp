@@ -48,10 +48,9 @@ int RemoteMain()
 	stream << L"Hello world!\nI'm called from " << processPath;
 	MessageBoxW(NULL, stream.str().c_str(), L"InjectExe", MB_OK);*/
 
-	//WCHAR* processPath = new WCHAR[MAX_PATH];
 	WCHAR* processPath = (WCHAR*)malloc(sizeof(WCHAR) * MAX_PATH);
 	GetModuleFileNameW(GetModuleHandle(NULL), processPath, MAX_PATH);
-	MessageBox(NULL, processPath, _T("InjectExe"), MB_OK);
+	MessageBoxW(NULL, processPath, L"InjectExe", MB_OK);
 
 	return 0;
 }
