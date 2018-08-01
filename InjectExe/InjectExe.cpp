@@ -1,5 +1,9 @@
 ﻿// InjectExe.cpp: Inject the whole exe into another process
 //
+// Don't rely on the initial state of global variables, because it may change at runtime.
+// This means you can't use static linked CRT. Some functions in CRT such as malloc() rely on
+// the initial value of global variables. And you can't use dynamically allocated memory,
+// because they are not copied to target process.
 
 #include "stdafx.h"
 
@@ -21,8 +25,9 @@ namespace
 }
 
 
-// Inject the whole exe into another process. Call main() in the target process.
-// Return the address of exe in the target process, or NULL if fail
+// Inject the whole exe into another process. Call callback in the target process.
+// Callback must return 0 or the function will fail.
+// Return the address of exe in the target process, or NULL on fail
 LPVOID InjectExe(HANDLE process, RemoteCallbackType callback)
 {
 	PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)GetModuleHandle(NULL);

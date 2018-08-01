@@ -4,7 +4,6 @@
 #include "stdafx.h"
 #include <array>
 #include <sstream>
-#include <string>
 
 #include "InjectExe.h"
 
