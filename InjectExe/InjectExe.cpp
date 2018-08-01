@@ -2,8 +2,8 @@
 //
 // Don't rely on the initial state of global variables, because it may change at runtime.
 // This means you can't use static linked CRT. Some functions in CRT such as malloc() rely on
-// the initial value of global variables. And you can't use dynamically allocated memory,
-// because they are not copied to target process.
+// the initial value of global variables. And you can't use pointers which point to memory of
+// the source process, because they are not copied to the target process.
 
 #include "stdafx.h"
 
