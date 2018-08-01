@@ -5,11 +5,15 @@
 #include <array>
 #include <sstream>
 
+#include "Hook.h"
 #include "InjectExe.h"
 
 using namespace std;
 
 int RemoteMain();
+int WINAPI MyMessageBoxW(HWND hWnd, LPCWSTR lpText, LPCWSTR lpCaption, UINT uType);
+
+unique_ptr<InlineHook> messageBoxWHook;
 
 
 int main()
@@ -47,5 +51,18 @@ int RemoteMain()
 	stream << L"Hello world!\nI'm called from " << &processPath.front();
 	MessageBoxW(NULL, stream.str().c_str(), L"InjectExe", MB_OK);
 
+	// Test hook
+	messageBoxWHook = make_unique<decltype(messageBoxWHook)::element_type>(MessageBoxW, MyMessageBoxW);
+	MessageBoxW(NULL, L"blahblah", L"InjectExe", MB_OK);
+	messageBoxWHook = nullptr;
+
 	return 0;
+}
+
+int WINAPI MyMessageBoxW(HWND hWnd, LPCWSTR lpText, LPCWSTR lpCaption, UINT uType)
+{
+	messageBoxWHook->Disable();
+	int result = MessageBoxW(hWnd, _T("MessageBoxW is hooked!"), lpCaption, uType);
+	messageBoxWHook->Enable();
+	return result;
 }
