@@ -1,4 +1,4 @@
 ﻿#pragma once
 
-bool IsInRemoteProcess();
-LPVOID InjectExe(HANDLE process);
+typedef int(* RemoteCallbackType)();
+LPVOID InjectExe(HANDLE process, RemoteCallbackType callback);

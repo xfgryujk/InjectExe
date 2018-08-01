@@ -2,7 +2,6 @@
 //
 
 #include "stdafx.h"
-#include <array>
 
 #include "InjectExe.h"
 
@@ -10,36 +9,25 @@ using namespace std;
 
 namespace
 {
-	bool isInRemoteProcess = false;
-
 	struct InjectionContext
 	{
 		LPVOID imageBase; // remoteImageBase
 		uintptr_t offset; // remoteImageBase - imageBase
-		array<TCHAR, MAX_PATH> filePath;
+		RemoteCallbackType callback;
 	};
 	DWORD WINAPI RemoteStartup(InjectionContext* ctx);
 	bool RelocateModuleBase(InjectionContext* ctx);
 	bool ResolveImportTable(InjectionContext* ctx);
-	//bool RestoreGlobalVariables(InjectionContext* ctx);
-	bool ExecuteTlsCallback(InjectionContext* ctx);
-	bool CallModuleEntry(InjectionContext* ctx);
 }
 
-
-bool IsInRemoteProcess()
-{
-	return isInRemoteProcess;
-}
 
 // Inject the whole exe into another process. Call main() in the target process.
 // Return the address of exe in the target process, or NULL if fail
-LPVOID InjectExe(HANDLE process)
+LPVOID InjectExe(HANDLE process, RemoteCallbackType callback)
 {
-	HMODULE module = GetModuleHandle(NULL);
-	PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)module;
+	PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)GetModuleHandle(NULL);
 	PIMAGE_NT_HEADERS ntHeader = PIMAGE_NT_HEADERS((uintptr_t)dosHeader + dosHeader->e_lfanew);
-	LPVOID imageBase = (LPVOID)module;
+	LPVOID imageBase = (LPVOID)dosHeader;
 	SIZE_T imageSize = ntHeader->OptionalHeader.SizeOfImage;
 
 	LPVOID remoteImageBase = NULL;
@@ -63,7 +51,7 @@ LPVOID InjectExe(HANDLE process)
 		InjectionContext ctx;
 		ctx.imageBase = remoteImageBase;
 		ctx.offset = offset;
-		GetModuleFileName(module, &ctx.filePath.front(), (DWORD)ctx.filePath.size());
+		ctx.callback = RemoteCallbackType((uintptr_t)callback + offset);
 
 		// Write InjectionContext
 		remoteCtx = VirtualAllocEx(process, NULL, imageSize, MEM_COMMIT, PAGE_READWRITE);
@@ -90,7 +78,7 @@ LPVOID InjectExe(HANDLE process)
 	}
 	catch (runtime_error& e)
 	{
-		cerr << e.what() << ": " << GetLastError() << endl;
+		cerr << e.what() << ": 0x" << hex << GetLastError() << oct << endl;
 		CloseHandle(remoteThread);
 		VirtualFreeEx(process, remoteCtx, sizeof(InjectionContext), MEM_DECOMMIT);
 		VirtualFreeEx(process, remoteImageBase, imageSize, MEM_DECOMMIT);
@@ -110,14 +98,7 @@ namespace
 			return 1;
 		if (!ResolveImportTable(ctx))
 			return 2;
-		/*if (!RestoreGlobalVariables(ctx))
-			return 3;*/
-		isInRemoteProcess = true;
-		if (!ExecuteTlsCallback(ctx))
-			return 4;
-		if (!CallModuleEntry(ctx))
-			return 5;
-		return 0;
+		return ctx->callback();
 	}
 
 	// Copyed from mmLoader: https://github.com/tishion/mmLoader
@@ -201,77 +182,6 @@ namespace
 				iatThunk->u1.Function = (uintptr_t)function;
 			}
 		}
-		return true;
-	}
-
-	//bool RestoreGlobalVariables(InjectionContext* ctx)
-	//{
-	//	auto dosHeader = (PIMAGE_DOS_HEADER)ctx->imageBase;
-	//	auto ntHeader = PIMAGE_NT_HEADERS((uintptr_t)dosHeader + dosHeader->e_lfanew);
-
-	//	// Map the exe file into memory
-	//	HANDLE file = CreateFile(&ctx->filePath.front(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-	//	if (file == INVALID_HANDLE_VALUE)
-	//		return false;
-	//	HANDLE mapping = CreateFileMapping(file, NULL, PAGE_READONLY, 0, 0, NULL);
-	//	if (mapping == NULL)
-	//	{
-	//		CloseHandle(file);
-	//		return false;
-	//	}
-	//	LPVOID fileBuffer = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
-	//	if (fileBuffer == NULL)
-	//	{
-	//		CloseHandle(mapping);
-	//		CloseHandle(file);
-	//		return false;
-	//	}
-
-	//	auto sectionHeader = PIMAGE_SECTION_HEADER((uintptr_t)ntHeader + sizeof(IMAGE_NT_HEADERS));
-	//	int nSections = ntHeader->FileHeader.NumberOfSections;
-	//	for (int i = 0; i < nSections; ++i)
-	//	{
-	//		if (sectionHeader[i].VirtualAddress == 0)
-	//			continue;
-	//		constexpr DWORD DATA_CHARACTERISTICS = IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE | IMAGE_SCN_CNT_INITIALIZED_DATA;
-	//		// This section stores initialized global variables
-	//		if ((sectionHeader[i].Characteristics & DATA_CHARACTERISTICS) == DATA_CHARACTERISTICS)
-	//		{
-	//			memcpy((BYTE*)ctx->imageBase + sectionHeader[i].VirtualAddress,
-	//				(BYTE*)fileBuffer + sectionHeader[i].PointerToRawData,
-	//				sectionHeader[i].SizeOfRawData);
-	//		}
-	//	}
-
-	//	UnmapViewOfFile(fileBuffer);
-	//	CloseHandle(mapping);
-	//	CloseHandle(file);
-	//	return true;
-	//}
-
-	bool ExecuteTlsCallback(InjectionContext* ctx)
-	{
-		auto dosHeader = (PIMAGE_DOS_HEADER)ctx->imageBase;
-		auto ntHeader = PIMAGE_NT_HEADERS((uintptr_t)dosHeader + dosHeader->e_lfanew);
-		if (ntHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress == 0)
-			return true;
-
-		auto tls = PIMAGE_TLS_DIRECTORY((uintptr_t)ctx->imageBase +
-			ntHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress);
-		for (auto callback = (PIMAGE_TLS_CALLBACK*)tls->AddressOfCallBacks; callback != NULL; callback++)
-			(*callback)(ctx->imageBase, DLL_PROCESS_ATTACH, NULL);
-		return true;
-	}
-
-	bool CallModuleEntry(InjectionContext* ctx)
-	{
-		auto dosHeader = (PIMAGE_DOS_HEADER)ctx->imageBase;
-		auto ntHeader = PIMAGE_NT_HEADERS((uintptr_t)dosHeader + dosHeader->e_lfanew);
-
-		auto crtStartup = (int(*)())((uintptr_t)ctx->imageBase + ntHeader->OptionalHeader.AddressOfEntryPoint);
-		if (crtStartup == NULL)
-			return false;
-		crtStartup(); // This function should never return
 		return true;
 	}
 }
