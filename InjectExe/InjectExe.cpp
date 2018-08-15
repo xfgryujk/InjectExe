@@ -30,9 +30,9 @@ namespace
 // Return the address of exe in the target process, or NULL on fail
 LPVOID InjectExe(HANDLE process, RemoteCallbackType callback)
 {
-	PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)GetModuleHandle(NULL);
-	PIMAGE_NT_HEADERS ntHeader = PIMAGE_NT_HEADERS((uintptr_t)dosHeader + dosHeader->e_lfanew);
-	LPVOID imageBase = (LPVOID)dosHeader;
+	auto dosHeader = (PIMAGE_DOS_HEADER)GetModuleHandle(NULL);
+	auto ntHeader = PIMAGE_NT_HEADERS((uintptr_t)dosHeader + dosHeader->e_lfanew);
+	auto imageBase = (LPVOID)dosHeader;
 	SIZE_T imageSize = ntHeader->OptionalHeader.SizeOfImage;
 
 	LPVOID remoteImageBase = NULL;
@@ -59,7 +59,7 @@ LPVOID InjectExe(HANDLE process, RemoteCallbackType callback)
 		ctx.callback = RemoteCallbackType((uintptr_t)callback + offset);
 
 		// Write InjectionContext
-		remoteCtx = VirtualAllocEx(process, NULL, imageSize, MEM_COMMIT, PAGE_READWRITE);
+		remoteCtx = VirtualAllocEx(process, NULL, sizeof(ctx), MEM_COMMIT, PAGE_READWRITE);
 		if (remoteCtx == NULL)
 			throw runtime_error("Failed to allocate remoteCtx");
 		if (!WriteProcessMemory(process, remoteCtx, &ctx, sizeof(ctx), NULL))
@@ -78,8 +78,6 @@ LPVOID InjectExe(HANDLE process, RemoteCallbackType callback)
 			SetLastError(exitCode);
 			throw runtime_error("RemoteStartup failed");
 		}
-		
-		return remoteImageBase;
 	}
 	catch (runtime_error& e)
 	{
